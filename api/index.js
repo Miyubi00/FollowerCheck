@@ -14,31 +14,7 @@ app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
 app.use(express.json());
 
 // ================================
-// PARSER
-// ================================
-const parseUsers = (json) => {
-  const set = new Set();
-  if (!Array.isArray(json)) return set;
-
-  json.forEach(item => {
-    if (item.string_list_data?.[0]?.value) {
-      set.add(item.string_list_data[0].value);
-    } else if (item.title) {
-      set.add(item.title);
-    } else if (item.string_list_data?.[0]?.href) {
-      const u = item.string_list_data[0].href
-        .split("/")
-        .filter(Boolean)
-        .pop();
-      if (u) set.add(u);
-    }
-  });
-
-  return set;
-};
-
-// ================================
-// MAIN ROUTE
+// MAIN
 // ================================
 app.post("/api/analyze", upload.single("zip"), (req, res) => {
   if (!req.file) {
@@ -49,49 +25,47 @@ app.post("/api/analyze", upload.single("zip"), (req, res) => {
     const zip = new AdmZip(req.file.buffer);
     const entries = zip.getEntries();
 
-    let followersSet = new Set();
-    let followingSet = new Set();
-
-    let foundFollowers = false;
-    let foundFollowing = false;
+    let followers = [];
+    let following = [];
 
     entries.forEach(entry => {
       const filename = entry.entryName.split("/").pop().toLowerCase();
 
-      // 🔒 LOCK FILE NAME
+      // === FOLLOWERS ===
       if (filename === "followers_1.json") {
         const json = JSON.parse(entry.getData().toString("utf8"));
-        followersSet = parseUsers(json);
-        foundFollowers = true;
+
+        followers = json
+          .map(item => item.string_list_data?.[0]?.value)
+          .filter(Boolean);
       }
 
+      // === FOLLOWING ===
       if (filename === "following.json") {
         const json = JSON.parse(entry.getData().toString("utf8"));
-        followingSet = parseUsers(json);
-        foundFollowing = true;
+
+        following = json
+          .map(item => item.title)
+          .filter(Boolean);
       }
     });
 
-    if (!foundFollowers || !foundFollowing) {
+    if (!followers.length || !following.length) {
       return res.status(400).json({
         detail:
-          "File tidak ditemukan. Pastikan ZIP berisi followers_1.json dan following.json"
+          "followers_1.json atau following.json tidak ditemukan / kosong"
       });
     }
 
-    const notFollowingBack = [...followingSet].filter(
-      u => !followersSet.has(u)
-    );
-
-    const notFollowedBackByMe = [...followersSet].filter(
-      u => !followingSet.has(u)
+    // 🔥 LOGIKA PYTHON ASLI
+    const notFollowingBack = following.filter(
+      u => !followers.includes(u)
     );
 
     res.json({
-      followers_count: followersSet.size,
-      following_count: followingSet.size,
-      not_following_back: notFollowingBack,
-      not_followed_back_by_me: notFollowedBackByMe
+      followers_count: followers.length,
+      following_count: following.length,
+      not_following_back: notFollowingBack
     });
 
   } catch (err) {
