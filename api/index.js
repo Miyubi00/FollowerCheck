@@ -5,88 +5,36 @@ import cors from "cors";
 
 const app = express();
 
-// ================================
-// MULTER (MEMORY, SIZE LIMIT)
-// ================================
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024 } // 15MB aman untuk Vercel
+  limits: { fileSize: 15 * 1024 * 1024 }
 });
 
-// ================================
-// CORS
-// ================================
-app.use(
-  cors({
-    origin: "*",
-    methods: ["GET", "POST"],
-    allowedHeaders: ["Content-Type"]
-  })
-);
-
+app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
 app.use(express.json());
 
 // ================================
-// PARSE FOLLOWERS
+// PARSER
 // ================================
-const parseFollowers = (jsonData) => {
-  const usernames = new Set();
-  let list = [];
+const parseUsers = (json) => {
+  const set = new Set();
+  if (!Array.isArray(json)) return set;
 
-  if (Array.isArray(jsonData)) {
-    list = jsonData;
-  } else if (jsonData.relationships_followers?.data) {
-    list = jsonData.relationships_followers.data;
-  } else if (jsonData.relationships_followers) {
-    list = jsonData.relationships_followers;
-  }
-
-  list.forEach((item) => {
-    const value = item.string_list_data?.[0]?.value;
-    if (value) usernames.add(value);
-  });
-
-  return usernames;
-};
-
-// ================================
-// PARSE FOLLOWING (DEFENSIVE)
-// ================================
-const parseFollowing = (jsonData) => {
-  const usernames = new Set();
-  let list = [];
-
-  if (Array.isArray(jsonData)) {
-    list = jsonData;
-  } else if (jsonData.relationships_following?.data) {
-    list = jsonData.relationships_following.data;
-  } else if (jsonData.relationships_following) {
-    list = jsonData.relationships_following;
-  }
-
-  list.forEach((item) => {
-    // 1️⃣ PRIORITAS: title
-    if (item.title && item.title.trim() !== "") {
-      usernames.add(item.title);
-      return;
-    }
-
-    // 2️⃣ fallback: value
-    const value = item.string_list_data?.[0]?.value;
-    if (value) {
-      usernames.add(value);
-      return;
-    }
-
-    // 3️⃣ fallback terakhir: ambil dari href
-    const href = item.string_list_data?.[0]?.href;
-    if (href) {
-      const username = href.split("/").filter(Boolean).pop();
-      if (username) usernames.add(username);
+  json.forEach(item => {
+    if (item.string_list_data?.[0]?.value) {
+      set.add(item.string_list_data[0].value);
+    } else if (item.title) {
+      set.add(item.title);
+    } else if (item.string_list_data?.[0]?.href) {
+      const u = item.string_list_data[0].href
+        .split("/")
+        .filter(Boolean)
+        .pop();
+      if (u) set.add(u);
     }
   });
 
-  return usernames;
+  return set;
 };
 
 // ================================
@@ -94,92 +42,49 @@ const parseFollowing = (jsonData) => {
 // ================================
 app.post("/api/analyze", upload.single("zip"), (req, res) => {
   if (!req.file) {
-    return res.status(400).json({ detail: "File ZIP wajib diupload." });
+    return res.status(400).json({ detail: "ZIP wajib diupload" });
   }
 
   try {
     const zip = new AdmZip(req.file.buffer);
     const entries = zip.getEntries();
 
-    const followersSet = new Set();
-    const followingSet = new Set();
+    let followersSet = new Set();
+    let followingSet = new Set();
 
-    let foundFollowersJSON = false;
-    let foundFollowingJSON = false;
-    let foundHTML = false;
+    let foundFollowers = false;
+    let foundFollowing = false;
 
-    entries.forEach((entry) => {
-      const name = entry.entryName.toLowerCase();
+    entries.forEach(entry => {
+      const filename = entry.entryName.split("/").pop().toLowerCase();
 
-      // Deteksi HTML
-      if (
-        (name.includes("followers") || name.includes("following")) &&
-        name.endsWith(".html")
-      ) {
-        foundHTML = true;
+      // 🔒 LOCK FILE NAME
+      if (filename === "followers_1.json") {
+        const json = JSON.parse(entry.getData().toString("utf8"));
+        followersSet = parseUsers(json);
+        foundFollowers = true;
       }
 
-      if (!name.endsWith(".json")) return;
-
-      // FOLLOWERS (HINDARI DOUBLE MATCH)
-      if (
-        name.includes("followers") &&
-        !name.includes("following") &&
-        !name.includes("pending")
-      ) {
-        try {
-          const json = JSON.parse(entry.getData().toString("utf8"));
-          const users = parseFollowers(json);
-          users.forEach((u) => followersSet.add(u));
-          foundFollowersJSON = true;
-        } catch (e) {
-          console.error("Followers parse error:", e.message);
-        }
-      }
-
-      // FOLLOWING
-      else if (
-        name.includes("following") &&
-        !name.includes("followers") &&
-        !name.includes("pending")
-      ) {
-        try {
-          const json = JSON.parse(entry.getData().toString("utf8"));
-          const users = parseFollowing(json);
-          users.forEach((u) => followingSet.add(u));
-          foundFollowingJSON = true;
-        } catch (e) {
-          console.error("Following parse error:", e.message);
-        }
+      if (filename === "following.json") {
+        const json = JSON.parse(entry.getData().toString("utf8"));
+        followingSet = parseUsers(json);
+        foundFollowing = true;
       }
     });
 
-    // ================================
-    // ERROR HANDLING
-    // ================================
-    if (!foundFollowersJSON || !foundFollowingJSON) {
-      if (foundHTML) {
-        return res.status(400).json({
-          detail:
-            "Format Salah: Data Instagram yang diupload adalah HTML. Mohon request data dalam format JSON."
-        });
-      }
-
+    if (!foundFollowers || !foundFollowing) {
       return res.status(400).json({
         detail:
-          "File ZIP tidak valid. Pastikan berisi followers dan following dalam format JSON."
+          "File tidak ditemukan. Pastikan ZIP berisi followers_1.json dan following.json"
       });
     }
 
-    // ================================
-    // COMPARE
-    // ================================
     const notFollowingBack = [...followingSet].filter(
-      (u) => !followersSet.has(u)
+      u => !followersSet.has(u)
     );
 
     const notFollowedBackByMe = [...followersSet].filter(
-      (u) => !followingSet.has(u)
+      u => !followingSet.has(u)
     );
 
     res.json({
@@ -188,20 +93,15 @@ app.post("/api/analyze", upload.single("zip"), (req, res) => {
       not_following_back: notFollowingBack,
       not_followed_back_by_me: notFollowedBackByMe
     });
+
   } catch (err) {
-    console.error("Server Error:", err);
-    res.status(500).json({ detail: "Gagal memproses file ZIP." });
+    console.error(err);
+    res.status(500).json({ detail: "Gagal memproses ZIP" });
   }
 });
 
-// ================================
-// TEST ROUTE
-// ================================
-app.get("/api", (req, res) => {
-  res.status(200).send("Server Backend Vercel Berjalan Normal! 🚀");
+app.get("/api", (_, res) => {
+  res.send("Backend OK 🚀");
 });
 
-// ================================
-// EXPORT UNTUK VERCEL
-// ================================
 export default app;
