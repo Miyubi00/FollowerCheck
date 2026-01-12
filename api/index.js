@@ -6,7 +6,13 @@ import cors from 'cors';
 const app = express();
 const upload = multer({ storage: multer.memoryStorage() });
 
-app.use(cors());
+// Konfigurasi CORS agar bisa diakses dari Frontend
+app.use(cors({
+    origin: '*', // Atau ganti dengan domain frontend kamu misal: 'https://follower-check.vercel.app'
+    methods: ['GET', 'POST'],
+    allowedHeaders: ['Content-Type']
+}));
+
 app.use(express.json());
 
 // --- PARSE FOLLOWERS ---
@@ -51,6 +57,7 @@ const parseFollowing = (jsonData) => {
     return usernames;
 };
 
+// --- ROUTE UTAMA (POST) ---
 app.post('/api/analyze', upload.single('zip'), (req, res) => {
     if (!req.file) return res.status(400).json({ detail: "File ZIP wajib diupload." });
 
@@ -61,72 +68,60 @@ app.post('/api/analyze', upload.single('zip'), (req, res) => {
         let followersSet = new Set();
         let followingSet = new Set();
         
-        // Flags untuk deteksi
         let foundFollowersJSON = false;
         let foundFollowingJSON = false;
-        let foundHTML = false; // Flag baru untuk deteksi salah format
+        let foundHTML = false;
 
         zipEntries.forEach((entry) => {
             const name = entry.entryName.toLowerCase();
             
-            // 1. Cek apakah user salah upload format HTML
+            // Cek HTML
             if ((name.includes('followers') || name.includes('following')) && name.endsWith('.html')) {
                 foundHTML = true;
             }
 
-            // Skip jika bukan JSON (Lanjut cari JSON)
+            // Skip jika bukan JSON
             if (!name.endsWith('.json')) return;
 
-            // 2. PROSES FILE FOLLOWERS (JSON)
+            // Proses Followers
             if (name.includes('followers') && !name.includes('pending')) {
                 try {
                     const content = JSON.parse(entry.getData().toString('utf8'));
                     const users = parseFollowers(content);
                     users.forEach(u => followersSet.add(u));
                     if (users.size > 0) foundFollowersJSON = true;
-                    console.log(`Followers found: ${name} (${users.size})`);
                 } catch (e) {
                     console.error(`Error parsing followers:`, e.message);
                 }
             }
 
-            // 3. PROSES FILE FOLLOWING (JSON)
+            // Proses Following
             if (name.includes('following') && !name.includes('pending')) {
                 try {
                     const content = JSON.parse(entry.getData().toString('utf8'));
                     const users = parseFollowing(content);
                     users.forEach(u => followingSet.add(u));
                     if (users.size > 0) foundFollowingJSON = true;
-                    console.log(`Following found: ${name} (${users.size})`);
                 } catch (e) {
                     console.error(`Error parsing following:`, e.message);
                 }
             }
         });
 
-        // --- LOGIC ERROR HANDLING ---
-        
-        // Jika salah satu file JSON tidak ketemu
+        // Error Handling
         if (!foundFollowersJSON || !foundFollowingJSON) {
-            
-            // KASUS 1: JSON gak ada, tapi HTML ada -> Salah Format
             if (foundHTML) {
                 return res.status(400).json({ 
                     detail: "Format Salah: Terdeteksi file HTML. Mohon request data Instagram dalam format JSON, bukan HTML." 
                 });
             }
-
-            // KASUS 2: JSON gak ada, HTML juga gak ada -> File Hilang/Salah ZIP
             return res.status(400).json({ 
-                detail: `File ZIP Salah: Tidak ditemukan file followers atau following. Pastikan kamu mengunduh 'Followers and following' di Instagram.` 
+                detail: `File ZIP Salah: Tidak ditemukan file followers atau following JSON.` 
             });
         }
 
-        // Hitung Logika
         const notFollowingBack = [...followingSet].filter(x => !followersSet.has(x));
         const notFollowedBackByMe = [...followersSet].filter(x => !followingSet.has(x));
-
-        console.log(`Sukses! ${notFollowingBack.length} orang tidak follback.`);
 
         res.json({
             not_following_back: notFollowingBack,
@@ -135,11 +130,16 @@ app.post('/api/analyze', upload.single('zip'), (req, res) => {
 
     } catch (error) {
         console.error("Server Error:", error);
-        res.status(500).json({ detail: "Gagal memproses file ZIP (Corrupt atau Password protected)." });
+        res.status(500).json({ detail: "Gagal memproses file ZIP." });
     }
 });
 
-const PORT = 3000;
-app.listen(PORT, () => {
-    console.log(`Server siap di http://localhost:${PORT}`);
+// --- ROUTE TEST (GET) ---
+// Akses ini di browser: https://follower-check.vercel.app/api
+app.get('/api', (req, res) => {
+    res.status(200).send("Server Backend Vercel Berjalan Normal! 🚀");
 });
+
+// --- PENTING UNTUK VERCEL ---
+// Jangan gunakan app.listen()
+export default app;
